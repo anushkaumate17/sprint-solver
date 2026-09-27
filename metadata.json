@@ -1,0 +1,6 @@
+{
+  "name": "MilkSafe 3D Lab - Milk Adulteration Testing Platform",
+  "description": "Integrated milk safety platform featuring an interactive 3D virtual chemistry laboratory bench, real-time adulterant assays, chemical reaction simulations, safety detection protocols, and analytical reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
