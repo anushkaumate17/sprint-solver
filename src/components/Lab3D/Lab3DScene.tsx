@@ -1,12 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { REAGENTS, MILK_SAMPLES, ASSAY_PROTOCOLS } from '../../data/labData';
+import { REAGENTS } from '../../data/labData';
 import { MilkSample, Reagent } from '../../types/lab';
 
 interface Lab3DSceneProps {
   currentSample: MilkSample;
-  currentReagentsInTube: string[]; // reagent IDs
+  currentReagentsInTube: string[];
   hasMilkInTube: boolean;
   tubeFluidColor: string; // hex
   tubeFluidVolume: number; // 0 to 1
@@ -23,11 +23,13 @@ interface Lab3DSceneProps {
 interface LabelPosition {
   id: string;
   name: string;
+  subText?: string;
   x: number;
   y: number;
   visible: boolean;
   type: 'reagent' | 'milk' | 'tube' | 'heater';
   reagentData?: Reagent;
+  badgeColor?: string;
 }
 
 export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
@@ -50,15 +52,19 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
   const [isPipetting, setIsPipetting] = useState(false);
   const [pipetteFluidColor, setPipetteFluidColor] = useState<string>('#ffffff');
 
-  // Internal Three.js references
+  // Three.js instances
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
 
-  // Mesh references for animation
+  // Mesh & animation references
   const testTubeGroupRef = useRef<THREE.Group | null>(null);
-  const liquidMeshRef = useRef<THREE.Mesh | null>(null);
+  const tubeFluidGroupRef = useRef<THREE.Group | null>(null);
+  const tubeFluidMatRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  const tubeFluidColMeshRef = useRef<THREE.Mesh | null>(null);
+  const tubeFluidMeniscusRef = useRef<THREE.Mesh | null>(null);
+
   const pipetteGroupRef = useRef<THREE.Group | null>(null);
   const pipetteLiquidRef = useRef<THREE.Mesh | null>(null);
   const steamParticlesRef = useRef<THREE.Points | null>(null);
@@ -79,14 +85,44 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     stage: 'approach_source',
     progress: 0,
     sourcePos: new THREE.Vector3(),
-    targetPos: new THREE.Vector3(0, 1.8, 0.4),
+    targetPos: new THREE.Vector3(0.04, 1.45, 0.4),
     homePos: new THREE.Vector3(0, 3.2, 0.4),
-    color: '#ffffff'
+    color: '#ffffff',
   });
 
-  // Target camera position for smooth interpolation
+  // Camera targets for smooth cinematic lerp
   const targetCamPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 3.6, 5.2));
   const targetLookAtRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1.2, 0));
+
+  // Sync fluid inside test tube (handles presence, color, height, and meniscus)
+  const syncTubeFluid = useCallback((hasMilk: boolean, colorHex: string, volume: number) => {
+    if (!tubeFluidGroupRef.current || !tubeFluidMatRef.current || !tubeFluidColMeshRef.current || !tubeFluidMeniscusRef.current) {
+      return;
+    }
+
+    if (!hasMilk || volume <= 0) {
+      tubeFluidGroupRef.current.visible = false;
+      return;
+    }
+
+    tubeFluidGroupRef.current.visible = true;
+
+    // Update color
+    tubeFluidMatRef.current.color.set(colorHex);
+
+    // Calculate realistic liquid column height (0.42 = standard 5 mL milk fill)
+    // Scale slightly higher if additional reagents are pipetted in
+    const fillHeight = 0.42 * Math.max(0.4, Math.min(1.4, volume / 0.5));
+    tubeFluidColMeshRef.current.scale.set(1, fillHeight, 1);
+
+    // Place the meniscus surface disc right at the fluid level
+    tubeFluidMeniscusRef.current.position.y = -0.045 + fillHeight;
+  }, []);
+
+  // Sync fluid when props change
+  useEffect(() => {
+    syncTubeFluid(hasMilkInTube, tubeFluidColor, tubeFluidVolume);
+  }, [hasMilkInTube, tubeFluidColor, tubeFluidVolume, syncTubeFluid]);
 
   // Handle camera presets
   useEffect(() => {
@@ -110,32 +146,12 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     }
   }, [cameraPreset]);
 
-  // Update test tube liquid color & scale smoothly
-  useEffect(() => {
-    if (liquidMeshRef.current) {
-      const mat = liquidMeshRef.current.material as THREE.MeshStandardMaterial;
-      const targetColor = new THREE.Color(tubeFluidColor);
-      mat.color.copy(targetColor);
-      mat.roughness = 0.1;
-      mat.metalness = 0.05;
-      mat.transparent = true;
-      mat.opacity = tubeFluidVolume > 0 ? 0.92 : 0;
-
-      // Scale height based on volume
-      const safeVol = Math.max(0.001, Math.min(1.0, tubeFluidVolume));
-      liquidMeshRef.current.scale.set(1, safeVol, 1);
-      liquidMeshRef.current.position.y = 0.05 + (safeVol * 0.7) / 2;
-    }
-  }, [tubeFluidColor, tubeFluidVolume]);
-
   // Handle heating position animation for test tube
   useEffect(() => {
     if (testTubeGroupRef.current) {
       if (isHeating) {
-        // Move tube into water bath well
         testTubeGroupRef.current.position.set(1.5, 0.85, 0.4);
       } else {
-        // Return to center stand
         testTubeGroupRef.current.position.set(0, 0.75, 0.4);
       }
     }
@@ -153,7 +169,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     const scene = new THREE.Scene();
     sceneRef.current = scene;
     scene.background = new THREE.Color(0xf1f5f9); // Clean laboratory slate
-    scene.fog = new THREE.FogExp2(0xf1f5f9, 0.04);
+    scene.fog = new THREE.FogExp2(0xf1f5f9, 0.035);
 
     // 2. Camera
     const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
@@ -173,17 +189,17 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.maxPolarAngle = Math.PI / 2 - 0.05; // don't go under table
+    controls.maxPolarAngle = Math.PI / 2 - 0.05;
     controls.minDistance = 1.2;
     controls.maxDistance = 8.5;
     controls.target.set(0, 1.3, 0);
     controlsRef.current = controls;
 
     // 5. Lighting (Studio 3-Point setup)
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
     scene.add(ambientLight);
 
-    const keyLight = new THREE.DirectionalLight(0xfffbeb, 1.6);
+    const keyLight = new THREE.DirectionalLight(0xfffbeb, 1.5);
     keyLight.position.set(4, 7, 5);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 2048;
@@ -191,11 +207,11 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     keyLight.shadow.bias = -0.0005;
     scene.add(keyLight);
 
-    const fillLight = new THREE.DirectionalLight(0xe0f2fe, 0.7);
+    const fillLight = new THREE.DirectionalLight(0xe0f2fe, 0.8);
     fillLight.position.set(-5, 4, 3);
     scene.add(fillLight);
 
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.9);
     rimLight.position.set(0, 5, -5);
     scene.add(rimLight);
 
@@ -206,7 +222,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     woodTextureCanvas.width = 512;
     woodTextureCanvas.height = 512;
     const ctx = woodTextureCanvas.getContext('2d')!;
-    ctx.fillStyle = '#c27b38'; // warm lab bench oak/beech
+    ctx.fillStyle = '#c27b38';
     ctx.fillRect(0, 0, 512, 512);
     ctx.fillStyle = '#b36d2c';
     for (let i = 0; i < 50; i++) {
@@ -230,7 +246,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     tableMesh.receiveShadow = true;
     scene.add(tableMesh);
 
-    // Two-tiered stepped shelf backing (as seen in user screenshot)
+    // Two-tiered stepped shelf backing
     const shelfBackGeom = new THREE.BoxGeometry(5.8, 1.5, 0.15);
     const shelfBackMesh = new THREE.Mesh(shelfBackGeom, woodMat);
     shelfBackMesh.position.set(0, 1.25, -1.1);
@@ -248,33 +264,33 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
 
     // Shelf support brackets
     const bracketGeom = new THREE.BoxGeometry(0.08, 0.5, 0.6);
-    const bracket1 = new THREE.Mesh(bracketGeom, woodMat);
-    bracket1.position.set(-2.5, 1.4, -0.8);
-    scene.add(bracket1);
-    const bracket2 = new THREE.Mesh(bracketGeom, woodMat);
-    bracket2.position.set(2.5, 1.4, -0.8);
-    scene.add(bracket2);
+    [-2.2, 0, 2.2].forEach((bx) => {
+      const bracket = new THREE.Mesh(bracketGeom, woodMat);
+      bracket.position.set(bx, 1.4, -0.8);
+      scene.add(bracket);
+    });
 
-    // Shadow catcher ground plane below bench
-    const floorGeom = new THREE.PlaneGeometry(20, 20);
+    // Floor shadow plane
+    const floorGeom = new THREE.PlaneGeometry(16, 16);
     const floorMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.8 });
     const floorMesh = new THREE.Mesh(floorGeom, floorMat);
     floorMesh.rotation.x = -Math.PI / 2;
-    floorMesh.position.y = 0.0;
+    floorMesh.position.y = 0;
     floorMesh.receiveShadow = true;
     scene.add(floorMesh);
 
-    // ==========================================
-    // 7. REAGENT BOTTLES ON THE TOP SHELF
-    // ==========================================
-    const glassMaterial = new THREE.MeshPhysicalMaterial({
+    // Reagent Bottle Glass (High clarity borosilicate)
+    const bottleGlassMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.45,
-      roughness: 0.1,
-      metalness: 0.1,
-      transmission: 0.9,
-      ior: 1.5,
+      opacity: 0.32,
+      roughness: 0.08,
+      metalness: 0.05,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.05,
+      reflectivity: 0.9,
+      depthWrite: false,
+      side: THREE.DoubleSide,
     });
 
     const capMaterial = new THREE.MeshStandardMaterial({
@@ -282,6 +298,9 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
       roughness: 0.3,
     });
 
+    // ==========================================
+    // 7. REAGENT BOTTLES ON THE TOP SHELF
+    // ==========================================
     const bottleSpacing = 0.68;
     const startX = -((REAGENTS.length - 1) * bottleSpacing) / 2;
 
@@ -292,11 +311,12 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
       const bZ = -0.75;
       bottleGroup.position.set(bX, bY, bZ);
 
-      // Glass Bottle Body (Cylinder)
+      // Glass Bottle Body
       const bodyGeom = new THREE.CylinderGeometry(0.18, 0.18, 0.45, 24);
-      const bodyMesh = new THREE.Mesh(bodyGeom, glassMaterial.clone());
+      const bodyMesh = new THREE.Mesh(bodyGeom, bottleGlassMaterial.clone());
       bodyMesh.castShadow = true;
       bodyMesh.receiveShadow = true;
+      bodyMesh.renderOrder = 10;
       bottleGroup.add(bodyMesh);
 
       // Liquid inside bottle
@@ -304,17 +324,19 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
       const liqMat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(reagent.fluidColor),
         roughness: 0.2,
-        transparent: true,
-        opacity: 0.85,
+        metalness: 0.05,
+        depthWrite: true,
       });
       const liqMesh = new THREE.Mesh(liqGeom, liqMat);
       liqMesh.position.y = -0.04;
+      liqMesh.renderOrder = 2;
       bottleGroup.add(liqMesh);
 
       // Neck & Cap
       const neckGeom = new THREE.CylinderGeometry(0.09, 0.12, 0.14, 20);
-      const neckMesh = new THREE.Mesh(neckGeom, glassMaterial);
+      const neckMesh = new THREE.Mesh(neckGeom, bottleGlassMaterial.clone());
       neckMesh.position.y = 0.28;
+      neckMesh.renderOrder = 10;
       bottleGroup.add(neckMesh);
 
       const capGeom = new THREE.CylinderGeometry(0.1, 0.1, 0.12, 20);
@@ -322,7 +344,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
       capMesh.position.y = 0.38;
       bottleGroup.add(capMesh);
 
-      // Dropper tip or label band
+      // Label band
       const labelGeom = new THREE.CylinderGeometry(0.182, 0.182, 0.22, 24, 1, true);
       const labelCanvas = document.createElement('canvas');
       labelCanvas.width = 256;
@@ -362,26 +384,30 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
 
     // Conical Erlenmeyer flask body
     const flaskGeom = new THREE.CylinderGeometry(0.15, 0.45, 0.7, 32);
-    const flaskMesh = new THREE.Mesh(flaskGeom, glassMaterial.clone());
+    const flaskMesh = new THREE.Mesh(flaskGeom, bottleGlassMaterial.clone());
     flaskMesh.castShadow = true;
     flaskMesh.position.y = 0.35;
+    flaskMesh.renderOrder = 10;
     flaskGroup.add(flaskMesh);
 
-    // Opaque Milk fluid inside
+    // Opaque Milk fluid inside flask
     const milkGeom = new THREE.CylinderGeometry(0.18, 0.42, 0.45, 32);
     const milkMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.25,
       metalness: 0.05,
+      depthWrite: true,
     });
     const milkMesh = new THREE.Mesh(milkGeom, milkMat);
     milkMesh.position.y = 0.23;
+    milkMesh.renderOrder = 2;
     flaskGroup.add(milkMesh);
 
     // Neck of flask
     const flaskNeckGeom = new THREE.CylinderGeometry(0.14, 0.14, 0.25, 24);
-    const flaskNeckMesh = new THREE.Mesh(flaskNeckGeom, glassMaterial);
+    const flaskNeckMesh = new THREE.Mesh(flaskNeckGeom, bottleGlassMaterial.clone());
     flaskNeckMesh.position.y = 0.75;
+    flaskNeckMesh.renderOrder = 10;
     flaskGroup.add(flaskNeckMesh);
 
     // Flask shadow
@@ -394,14 +420,14 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     scene.add(flaskGroup);
     interactiveObjectsRef.current.set('milk_sample', flaskGroup);
 
-    // ==========================================
-    // 9. TEST TUBE IN STAND (Foreground Center)
-    // ==========================================
+    // =======================================================
+    // 9. TEST TUBE IN STAND & VIBRANT COLLOIDAL FLUID (Center)
+    // =======================================================
     const tubeGroup = new THREE.Group();
     tubeGroup.position.set(0, 0.75, 0.4);
     testTubeGroupRef.current = tubeGroup;
 
-    // Test Tube Stand: Dark blue heavy base
+    // Test Tube Stand: Heavy dark slate base
     const standBaseGeom = new THREE.BoxGeometry(0.55, 0.08, 0.35);
     const standBaseMat = new THREE.MeshStandardMaterial({
       color: 0x1e293b,
@@ -430,35 +456,90 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     ring.position.set(0.04, 0.45, 0);
     tubeGroup.add(ring);
 
-    // Glass Test Tube Cylinder
+    // --- TEST TUBE FLUID GROUP (Milk & Reacting Chemicals) ---
+    // Fluid inner radius: 0.088 (snugly fills inside 0.095 radius glass)
+    const fluidGroup = new THREE.Group();
+    tubeFluidGroupRef.current = fluidGroup;
+
+    const fluidMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(tubeFluidColor),
+      roughness: 0.22,
+      metalness: 0.02,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+    });
+    tubeFluidMatRef.current = fluidMat;
+
+    // 1. Fluid Rounded Bottom Hemisphere (fills the rounded bottom of the tube)
+    const liqBottomGeom = new THREE.SphereGeometry(0.088, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+    const liqBottomMesh = new THREE.Mesh(liqBottomGeom, fluidMat);
+    liqBottomMesh.position.set(0.04, -0.045, 0);
+    liqBottomMesh.renderOrder = 2;
+    fluidGroup.add(liqBottomMesh);
+
+    // 2. Fluid Cylinder Column (translated so scale.y scales upward from base)
+    const liqColGeom = new THREE.CylinderGeometry(0.088, 0.088, 1.0, 32);
+    liqColGeom.translate(0, 0.5, 0); // origin is at bottom
+    const liqColMesh = new THREE.Mesh(liqColGeom, fluidMat);
+    liqColMesh.position.set(0.04, -0.045, 0);
+    liqColMesh.scale.set(1, 0.42, 1); // 0.42 height default (5 mL milk)
+    liqColMesh.renderOrder = 2;
+    fluidGroup.add(liqColMesh);
+    tubeFluidColMeshRef.current = liqColMesh;
+
+    // 3. Fluid Meniscus Top Surface Disc
+    const meniscusGeom = new THREE.CircleGeometry(0.088, 32);
+    const meniscusMesh = new THREE.Mesh(meniscusGeom, fluidMat);
+    meniscusMesh.rotation.x = -Math.PI / 2;
+    meniscusMesh.position.set(0.04, -0.045 + 0.42, 0);
+    meniscusMesh.renderOrder = 2;
+    fluidGroup.add(meniscusMesh);
+    tubeFluidMeniscusRef.current = meniscusMesh;
+
+    tubeGroup.add(fluidGroup);
+
+    // --- TEST TUBE GLASS ENVELOPE (Clear borosilicate glass) ---
+    const tubeGlassMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf8fafc,
+      transparent: true,
+      opacity: 0.28,
+      roughness: 0.04,
+      metalness: 0.05,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      reflectivity: 0.95,
+      depthWrite: false, // Ensures liquid inside is never occluded
+      side: THREE.DoubleSide,
+    });
+
+    // Glass cylinder body (height 0.85, bottom at -0.045, top at 0.805)
     const tubeGlassGeom = new THREE.CylinderGeometry(0.095, 0.095, 0.85, 32, 1, true);
-    const tubeGlass = new THREE.Mesh(tubeGlassGeom, glassMaterial.clone());
+    const tubeGlass = new THREE.Mesh(tubeGlassGeom, tubeGlassMat);
     tubeGlass.position.set(0.04, 0.38, 0);
     tubeGlass.castShadow = true;
+    tubeGlass.renderOrder = 10;
     tubeGroup.add(tubeGlass);
 
     // Rounded tube bottom hemisphere
     const bottomDomeGeom = new THREE.SphereGeometry(0.095, 32, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
-    const bottomDome = new THREE.Mesh(bottomDomeGeom, glassMaterial.clone());
+    const bottomDome = new THREE.Mesh(bottomDomeGeom, tubeGlassMat);
     bottomDome.position.set(0.04, -0.045, 0);
+    bottomDome.renderOrder = 10;
     tubeGroup.add(bottomDome);
 
-    // Tube Liquid (Reactive color)
-    const liqTubeGeom = new THREE.CylinderGeometry(0.09, 0.09, 0.7, 32);
-    const liqTubeMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(tubeFluidColor),
-      roughness: 0.15,
-      metalness: 0.05,
-      transparent: true,
-      opacity: 0.95,
-    });
-    const liqTube = new THREE.Mesh(liqTubeGeom, liqTubeMat);
-    liqTube.position.set(0.04, 0.25, 0);
-    tubeGroup.add(liqTube);
-    liquidMeshRef.current = liqTube;
+    // Lip rim ring at top of tube
+    const rimGeom = new THREE.TorusGeometry(0.095, 0.01, 16, 32);
+    const rimMesh = new THREE.Mesh(rimGeom, tubeGlassMat);
+    rimMesh.rotation.x = Math.PI / 2;
+    rimMesh.position.set(0.04, 0.805, 0);
+    rimMesh.renderOrder = 10;
+    tubeGroup.add(rimMesh);
 
     scene.add(tubeGroup);
     interactiveObjectsRef.current.set('test_tube', tubeGroup);
+
+    // Immediately sync fluid with initial props
+    syncTubeFluid(hasMilkInTube, tubeFluidColor, tubeFluidVolume);
 
     // ==========================================
     // 10. HEATING WATER BATH BLOCK (Foreground Right)
@@ -466,10 +547,9 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     const heaterGroup = new THREE.Group();
     heaterGroup.position.set(1.5, 0.5, 0.4);
 
-    // Metal chassis (gray rectangular block with 3 cylindrical wells)
     const heaterChassisGeom = new THREE.BoxGeometry(0.95, 0.42, 0.65);
     const heaterChassisMat = new THREE.MeshStandardMaterial({
-      color: 0x475569, // dark laboratory metal
+      color: 0x475569,
       roughness: 0.35,
       metalness: 0.5,
     });
@@ -491,30 +571,30 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
 
     // Indicator lamp on front of heater
     const lampGeom = new THREE.SphereGeometry(0.04, 16, 16);
-    const lampMat = new THREE.MeshBasicMaterial({ color: 0x22c55e }); // green READY
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
     const lamp = new THREE.Mesh(lampGeom, lampMat);
     lamp.position.set(0.35, 0.21, 0.33);
     heaterGroup.add(lamp);
     heatIndicatorLampRef.current = lamp;
 
     // Steam particle system
-    const steamParticleCount = 45;
-    const steamGeom = new THREE.BufferGeometry();
-    const steamPos = new Float32Array(steamParticleCount * 3);
-    for (let i = 0; i < steamParticleCount; i++) {
-      steamPos[i * 3] = (Math.random() - 0.5) * 0.4;
-      steamPos[i * 3 + 1] = Math.random() * 0.8;
-      steamPos[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+    const steamParticleCount = 80;
+    const steamGeo = new THREE.BufferGeometry();
+    const steamPositions = new Float32Array(steamParticleCount * 3);
+    for (let i = 0; i < steamParticleCount * 3; i += 3) {
+      steamPositions[i] = (Math.random() - 0.5) * 0.4;
+      steamPositions[i + 1] = 0.2 + Math.random() * 0.7;
+      steamPositions[i + 2] = (Math.random() - 0.5) * 0.3;
     }
-    steamGeom.setAttribute('position', new THREE.BufferAttribute(steamPos, 3));
+    steamGeo.setAttribute('position', new THREE.BufferAttribute(steamPositions, 3));
     const steamMat = new THREE.PointsMaterial({
       color: 0xffffff,
-      size: 0.06,
+      size: 0.07,
       transparent: true,
       opacity: 0,
     });
-    const steamParticles = new THREE.Points(steamGeom, steamMat);
-    steamParticles.position.set(0, 0.5, 0);
+    const steamParticles = new THREE.Points(steamGeo, steamMat);
+    steamParticles.position.set(0, 0.4, 0);
     heaterGroup.add(steamParticles);
     steamParticlesRef.current = steamParticles;
 
@@ -522,31 +602,49 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
     interactiveObjectsRef.current.set('heater', heaterGroup);
 
     // ==========================================
-    // 11. PIPETTE / DROPPER TOOL (For Animated Fluid Transfer)
+    // 11. DYNAMIC LABORATORY MICRO-PIPETTE
     // ==========================================
     const pipetteGroup = new THREE.Group();
     pipetteGroup.position.set(0, 3.2, 0.4);
     pipetteGroup.visible = false;
 
-    // Glass pipette barrel
-    const pBarrelGeom = new THREE.CylinderGeometry(0.035, 0.015, 0.7, 16);
-    const pBarrel = new THREE.Mesh(pBarrelGeom, glassMaterial);
-    pipetteGroup.add(pBarrel);
+    // Pipette Body
+    const pipBodyGeom = new THREE.CylinderGeometry(0.035, 0.035, 0.5, 16);
+    const pipBodyMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.3 });
+    const pipBody = new THREE.Mesh(pipBodyGeom, pipBodyMat);
+    pipBody.position.y = 0.35;
+    pipetteGroup.add(pipBody);
 
-    // Rubber squeeze bulb
-    const bulbGeom = new THREE.SphereGeometry(0.065, 16, 16);
-    const bulbMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.6 });
-    const bulb = new THREE.Mesh(bulbGeom, bulbMat);
-    bulb.position.y = 0.38;
-    pipetteGroup.add(bulb);
+    // Pipette Glass Tip
+    const pipTipGeom = new THREE.ConeGeometry(0.035, 0.4, 16);
+    const pipTipMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.5,
+      roughness: 0.1,
+      depthWrite: false,
+    });
+    const pipTip = new THREE.Mesh(pipTipGeom, pipTipMat);
+    pipTip.rotation.x = Math.PI;
+    pipTip.position.y = -0.1;
+    pipetteGroup.add(pipTip);
 
-    // Liquid inside pipette
-    const pLiqGeom = new THREE.CylinderGeometry(0.025, 0.01, 0.35, 16);
-    const pLiqMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const pLiq = new THREE.Mesh(pLiqGeom, pLiqMat);
-    pLiq.position.y = -0.15;
-    pipetteGroup.add(pLiq);
-    pipetteLiquidRef.current = pLiq;
+    // Pipette Internal Fluid Cone
+    const pipLiqGeom = new THREE.ConeGeometry(0.028, 0.32, 16);
+    const pipLiqMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const pipLiq = new THREE.Mesh(pipLiqGeom, pipLiqMat);
+    pipLiq.rotation.x = Math.PI;
+    pipLiq.position.y = -0.08;
+    pipLiq.visible = false;
+    pipetteGroup.add(pipLiq);
+    pipetteLiquidRef.current = pipLiq;
+
+    // Top plunger button
+    const plungerGeom = new THREE.CylinderGeometry(0.02, 0.02, 0.1, 16);
+    const plungerMat = new THREE.MeshStandardMaterial({ color: 0xef4444 });
+    const plunger = new THREE.Mesh(plungerGeom, plungerMat);
+    plunger.position.y = 0.65;
+    pipetteGroup.add(plunger);
 
     scene.add(pipetteGroup);
     pipetteGroupRef.current = pipetteGroup;
@@ -583,12 +681,12 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
           }
           steamParticlesRef.current.geometry.attributes.position.needsUpdate = true;
           if (heatIndicatorLampRef.current) {
-            (heatIndicatorLampRef.current.material as THREE.MeshBasicMaterial).color.setHex(0xef4444); // Red BOILING
+            (heatIndicatorLampRef.current.material as THREE.MeshBasicMaterial).color.setHex(0xef4444);
           }
         } else {
           mat.opacity = 0;
           if (heatIndicatorLampRef.current) {
-            (heatIndicatorLampRef.current.material as THREE.MeshBasicMaterial).color.setHex(0x22c55e); // Green READY
+            (heatIndicatorLampRef.current.material as THREE.MeshBasicMaterial).color.setHex(0x22c55e);
           }
         }
       }
@@ -607,7 +705,6 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
             anim.progress = 0;
           }
         } else if (anim.stage === 'draw') {
-          // Fill pipette with fluid color
           if (pipetteLiquidRef.current) {
             (pipetteLiquidRef.current.material as THREE.MeshBasicMaterial).color.set(anim.color);
             pipetteLiquidRef.current.visible = true;
@@ -631,7 +728,6 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
             anim.progress = 0;
           }
         } else if (anim.stage === 'dispense') {
-          // Empty pipette into test tube
           if (p >= 0.8) {
             if (pipetteLiquidRef.current) {
               pipetteLiquidRef.current.visible = false;
@@ -649,17 +745,17 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
         }
       }
 
-      // Project 3D positions to 2D screen coordinates for DOM tags (matching user screenshot)
+      // Project 3D positions to 2D screen coordinates for DOM tags
       if (showLabels && cameraRef.current && rendererRef.current) {
         const newLabels: LabelPosition[] = [];
         const tempVec = new THREE.Vector3();
 
-        // Reagent labels
-        REAGENTS.forEach((r) => {
+        // Reagent labels with staggered height to prevent overlapping
+        REAGENTS.forEach((r, idx) => {
           const obj = interactiveObjectsRef.current.get(`reagent_${r.id}`);
           if (obj) {
             obj.getWorldPosition(tempVec);
-            tempVec.y += 0.38; // position pin above cap
+            tempVec.y += 0.38 + (idx % 2 === 0 ? 0.08 : 0);
             tempVec.project(cameraRef.current!);
 
             const isFront = tempVec.z < 1;
@@ -668,10 +764,12 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
 
             newLabels.push({
               id: r.id,
-              name: r.name.split(' ')[0], // clean short label e.g. Iodine, Conc. H2SO4, etc.
+              name: r.name.split(' ')[0],
+              subText: r.chemicalFormula.slice(0, 6),
+              badgeColor: r.fluidColor,
               x,
               y,
-              visible: isFront && x >= 0 && x <= width && y >= 0 && y <= height,
+              visible: isFront && x >= -20 && x <= width + 20 && y >= -20 && y <= height + 20,
               type: 'reagent',
               reagentData: r,
             });
@@ -689,6 +787,8 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
           newLabels.push({
             id: 'milk_sample',
             name: 'Milk sample',
+            subText: '5 mL Flask',
+            badgeColor: '#ffffff',
             x,
             y,
             visible: tempVec.z < 1,
@@ -696,17 +796,19 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
           });
         }
 
-        // Test tube Label
+        // Test tube Label (dynamic based on whether milk is present)
         const tubeObj = interactiveObjectsRef.current.get('test_tube');
         if (tubeObj) {
           tubeObj.getWorldPosition(tempVec);
-          tempVec.y += 0.6;
+          tempVec.y += 0.65;
           tempVec.project(cameraRef.current);
           const x = ((tempVec.x + 1) * width) / 2;
           const y = ((-tempVec.y + 1) * height) / 2;
           newLabels.push({
             id: 'test_tube',
-            name: hasMilkInTube ? 'Reaction Tube' : 'Clean Test Tube',
+            name: hasMilkInTube ? 'Reaction Tube (Milk Loaded)' : 'Test Tube (Empty)',
+            subText: hasMilkInTube ? `${tubeFluidColor === '#ffffff' ? 'Pure Milk' : 'Reacting'}` : 'Click to add milk',
+            badgeColor: hasMilkInTube ? tubeFluidColor : '#94a3b8',
             x,
             y,
             visible: tempVec.z < 1,
@@ -726,6 +828,8 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
           newLabels.push({
             id: 'heater',
             name: isHeating ? `${Math.round(heatingProgress)}% BOILING` : 'READY',
+            subText: 'Water Bath 95°C',
+            badgeColor: isHeating ? '#ef4444' : '#22c55e',
             x,
             y,
             visible: tempVec.z < 1,
@@ -761,7 +865,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
         container.removeChild(renderer.domElement);
       }
     };
-  }, []);
+  }, [syncTubeFluid]);
 
   // Raycaster for clicking 3D objects
   const handleCanvasClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -789,6 +893,11 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
         } else if (key === 'milk_sample') {
           triggerPipetteMilk();
           onAddMilk();
+        } else if (key === 'test_tube') {
+          if (!hasMilkInTube) {
+            triggerPipetteMilk();
+            onAddMilk();
+          }
         } else if (key === 'heater') {
           onHeatSample();
         }
@@ -842,7 +951,7 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
         className="w-full h-full cursor-grab active:cursor-grabbing"
       />
 
-      {/* Floating 3D Object Labels (Recreated from User Reference Screenshot) */}
+      {/* Floating 3D Object Labels */}
       {showLabels && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {labels.map((lbl) => {
@@ -864,28 +973,41 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
                     } else if (lbl.type === 'milk') {
                       triggerPipetteMilk();
                       onAddMilk();
+                    } else if (lbl.type === 'tube') {
+                      if (!hasMilkInTube) {
+                        triggerPipetteMilk();
+                        onAddMilk();
+                      }
                     } else if (lbl.type === 'heater') {
                       onHeatSample();
                     }
                   }}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-semibold tracking-wide shadow-md transition-all flex items-center gap-1.5 ${
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono font-semibold tracking-wide shadow-md transition-all flex items-center gap-1.5 ${
                     lbl.type === 'heater'
                       ? isHeating
                         ? 'bg-rose-500 text-white border-rose-400 animate-pulse'
                         : 'bg-white/95 text-slate-800 border-slate-300 hover:bg-slate-50'
                       : lbl.type === 'milk'
-                      ? 'bg-white/95 text-slate-900 border-sky-400/80 hover:bg-sky-50 text-sm'
-                      : 'bg-white/95 text-slate-900 border-sky-300 hover:border-sky-500 hover:bg-sky-50'
+                      ? 'bg-white/95 text-slate-900 border-sky-400/80 hover:bg-sky-50 shadow-sky-100 ring-2 ring-sky-300/40'
+                      : lbl.type === 'tube'
+                      ? hasMilkInTube
+                        ? 'bg-white/95 text-slate-900 border-emerald-400/80 hover:bg-emerald-50'
+                        : 'bg-white/95 text-slate-700 border-amber-400 hover:bg-amber-50 animate-bounce'
+                      : 'bg-white/95 text-slate-900 border-slate-300 hover:border-sky-500 hover:bg-sky-50'
                   }`}
                 >
-                  {lbl.type === 'heater' && (
+                  {lbl.badgeColor && (
                     <span
-                      className={`inline-block w-2 h-2 rounded-full ${
-                        isHeating ? 'bg-white' : 'bg-emerald-500'
-                      }`}
+                      className="inline-block w-2.5 h-2.5 rounded-full border border-slate-300 shadow-sm shrink-0"
+                      style={{ backgroundColor: lbl.badgeColor }}
                     />
                   )}
-                  <span>{lbl.name}</span>
+                  <div className="flex flex-col text-left leading-tight">
+                    <span>{lbl.name}</span>
+                    {lbl.subText && (
+                      <span className="text-[10px] text-slate-500 font-normal">{lbl.subText}</span>
+                    )}
+                  </div>
                 </button>
               </div>
             );
@@ -893,9 +1015,17 @@ export const Lab3DScene: React.FC<Lab3DSceneProps> = ({
         </div>
       )}
 
+      {/* Pipetting status indicator */}
+      {isPipetting && (
+        <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 bg-sky-600/90 text-white text-xs font-semibold rounded-lg shadow-lg backdrop-blur-md animate-pulse">
+          <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+          <span>Pipetting in progress...</span>
+        </div>
+      )}
+
       {/* Bench Floor Label Notice */}
       <div className="absolute bottom-3 left-4 pointer-events-none text-xs text-slate-400 font-mono bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800 backdrop-blur-sm">
-        Drag: Orbit 360° · Scroll: Zoom · Right-Click: Pan · Click labels to pipette
+        Drag: Orbit 360° · Scroll: Zoom · Right-Click: Pan · Click bottles or labels to pipette
       </div>
     </div>
   );

@@ -46,13 +46,13 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
     return MILK_SAMPLES[0];
   });
 
-  // Test tube state
-  const [hasMilkInTube, setHasMilkInTube] = useState<boolean>(false);
+  // Test tube state - starts with milk loaded so user immediately sees milk in the tube
+  const [hasMilkInTube, setHasMilkInTube] = useState<boolean>(true);
   const [reagentsInTube, setReagentsInTube] = useState<string[]>([]);
   const [isHeating, setIsHeating] = useState<boolean>(false);
   const [heatingProgress, setHeatingProgress] = useState<number>(0);
   const [hasBeenHeated, setHasBeenHeated] = useState<boolean>(false);
-  const [guidedStepIndex, setGuidedStepIndex] = useState<number>(0);
+  const [guidedStepIndex, setGuidedStepIndex] = useState<number>(1);
   const [showLabels, setShowLabels] = useState<boolean>(true);
   const [cameraPreset, setCameraPreset] = useState<'overview' | 'tube' | 'reagents' | 'heater'>('overview');
   const [inspectorNotes, setInspectorNotes] = useState<string>('');
@@ -63,7 +63,7 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
     if (labMode === 'guided') {
       const match = MILK_SAMPLES.find((s) => s.adulterant === activeAssay.targetAdulterant);
       if (match) setSelectedSample(match);
-      resetTubeState();
+      resetTubeState(true);
     }
   }, [activeAssay, labMode]);
 
@@ -76,17 +76,17 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
         ...MILK_SAMPLES[7], // mystery base
         adulterant: randomPicked.adulterant,
       });
-      resetTubeState();
+      resetTubeState(true);
     }
   }, [labMode]);
 
-  const resetTubeState = () => {
-    setHasMilkInTube(false);
+  const resetTubeState = (keepMilk: boolean = true) => {
+    setHasMilkInTube(keepMilk);
     setReagentsInTube([]);
     setIsHeating(false);
     setHeatingProgress(0);
     setHasBeenHeated(false);
-    setGuidedStepIndex(0);
+    setGuidedStepIndex(keepMilk ? 1 : 0);
     setHasLoggedResult(false);
     setInspectorNotes('');
   };
@@ -291,13 +291,13 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
 
   const reaction = evaluateReaction();
 
-  // Handle adding milk
+  // Handle adding or refilling milk
   const handleAddMilk = () => {
-    if (!hasMilkInTube) {
-      setHasMilkInTube(true);
-      if (labMode === 'guided' && guidedStepIndex === 0) {
-        setGuidedStepIndex(1);
-      }
+    setHasMilkInTube(true);
+    setReagentsInTube([]);
+    setHasBeenHeated(false);
+    if (labMode === 'guided' && guidedStepIndex === 0) {
+      setGuidedStepIndex(1);
     }
   };
 
@@ -498,11 +498,23 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
           {/* Clean / Reset Tube */}
           <button
             type="button"
-            onClick={resetTubeState}
+            onClick={() => resetTubeState(false)}
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-1.5"
+            title="Empty test tube"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Clean Tube</span>
+            <span>Empty Tube</span>
+          </button>
+
+          {/* Load Fresh Milk */}
+          <button
+            type="button"
+            onClick={() => resetTubeState(true)}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 transition-colors flex items-center gap-1.5"
+            title="Fill tube with 5 mL fresh milk sample"
+          >
+            <FlaskConical className="w-3.5 h-3.5" />
+            <span>5 mL Milk</span>
           </button>
         </div>
       </div>
@@ -524,7 +536,7 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
               onSelectReagent={handleSelectReagent}
               onAddMilk={handleAddMilk}
               onHeatSample={handleHeatSample}
-              onResetTube={resetTubeState}
+              onResetTube={() => resetTubeState(false)}
               showLabels={showLabels}
               cameraPreset={cameraPreset}
             />
@@ -535,11 +547,25 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
                 <button
                   type="button"
                   onClick={handleAddMilk}
-                  className="px-3 py-1.5 bg-white text-slate-900 hover:bg-slate-100 rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-all"
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 transition-all ${
+                    hasMilkInTube
+                      ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 hover:bg-emerald-600/40'
+                      : 'bg-white text-slate-900 hover:bg-slate-100 ring-2 ring-sky-400 font-bold'
+                  }`}
                 >
-                  <FlaskConical className="w-3.5 h-3.5 text-sky-600" />
-                  <span>Pipette 5 mL Milk</span>
+                  <FlaskConical className="w-3.5 h-3.5 text-sky-400" />
+                  <span>{hasMilkInTube ? '✓ 5 mL Milk in Tube (Refill)' : '+ Pipette 5 mL Milk'}</span>
                 </button>
+                {hasMilkInTube && (
+                  <button
+                    type="button"
+                    onClick={() => resetTubeState(false)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Empty</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleHeatSample}
@@ -557,9 +583,9 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
 
               {/* Status pill in footer */}
               <div className="flex items-center gap-2 text-xs font-mono">
-                <span className="text-slate-400">Tube:</span>
-                <span className="text-sky-300">
-                  {hasMilkInTube ? 'Milk Added' : 'Empty'}
+                <span className="text-slate-400">Tube Status:</span>
+                <span className={hasMilkInTube ? 'text-emerald-300 font-semibold' : 'text-amber-400 font-medium'}>
+                  {hasMilkInTube ? '🥛 5 mL Milk Loaded' : '⚠️ Empty Tube'}
                   {reagentsInTube.length > 0 && ` + ${reagentsInTube.length} Reagent(s)`}
                   {hasBeenHeated && ' (Boiled)'}
                 </span>
@@ -625,7 +651,7 @@ export const Lab3DWorkbench: React.FC<Lab3DWorkbenchProps> = ({
                   const s = MILK_SAMPLES.find((item) => item.id === e.target.value);
                   if (s) {
                     setSelectedSample(s);
-                    resetTubeState();
+                    resetTubeState(true);
                   }
                 }}
                 className="w-full text-xs font-medium p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
